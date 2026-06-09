@@ -45,6 +45,7 @@ class StressResult:
     energy_above_guard_frac: float
     has_ultrasonic_energy: bool
     native_rate_check: Optional[dict] = None
+    capture_error: Optional[str] = None
     notes: List[str] = field(default_factory=list)
 
 
@@ -104,20 +105,31 @@ def run_capture(
     if callable(verify):
         native_check = verify()
 
+    capture_error = None
     t_start = time.perf_counter()
-    source.start(on_block)
     try:
+        source.start(on_block)
         deadline = t_start + duration
         while time.perf_counter() < deadline and source.is_running:
             time.sleep(0.02)
+    except Exception as exc:  # noqa: BLE001 - a failed open IS an M0 result, not a crash
+        capture_error = f"{type(exc).__name__}: {exc}"
     finally:
-        source.stop()
+        try:
+            source.stop()
+        except Exception:  # noqa: BLE001
+            pass
     elapsed = time.perf_counter() - t_start
 
-    fft = _fft_check(ring.latest(fft_nfft), source.samplerate, fft_nfft)
+    if counters["frames"] > 0:
+        fft = _fft_check(ring.latest(fft_nfft), source.samplerate, fft_nfft)
+    else:
+        fft = {"nfft": 0, "peak_hz": 0.0, "frac": 0.0, "ok": False}
     svc = np.asarray(service_ms) if service_ms else np.zeros(1)
 
     notes: List[str] = []
+    if capture_error:
+        notes.append(f"CAPTURE FAILED before/while streaming: {capture_error}")
     if getattr(source, "is_synthetic", False):
         notes.append(
             "SYNTHETIC-ONLY: Sim source. Real 250k native capture, Xrun limits and "
@@ -150,6 +162,7 @@ def run_capture(
         energy_above_guard_frac=float(fft["frac"]),
         has_ultrasonic_energy=bool(fft["ok"] and fft["frac"] >= ultrasonic_frac_threshold),
         native_rate_check=native_check,
+        capture_error=capture_error,
         notes=notes,
     )
 
@@ -178,6 +191,16 @@ def render_report(result: StressResult) -> str:
             lines.append(f"- **{k}**: {v}")
         lines.append("")
 
+    if r.capture_error:
+        lines.append("## CAPTURE FAILED (real-HW blocker)")
+        lines.append(f"- error: `{r.capture_error}`")
+        lines.append("- No native-rate stream opened, so the >24 kHz energy verdict could "
+                     "**not** be measured (see FFT section).")
+        lines.append("- Note: `IsFormatSupported` (the native-rate check above) passing while "
+                     "the stream open fails is typically a WASAPI **exclusive** `Initialize` "
+                     "refusal — device held by another app, or exclusive control disabled.")
+        lines.append("")
+
     lines.append("## Capture")
     lines.append(f"- requested duration: {r.requested_duration_s:.2f} s")
     lines.append(f"- elapsed: {r.elapsed_s:.2f} s")
@@ -199,14 +222,18 @@ def render_report(result: StressResult) -> str:
     lines.append("")
 
     lines.append("## FFT verification (offline, after capture)")
-    lines.append(f"- nfft: {r.fft_nfft}")
-    lines.append(f"- peak frequency: **{r.peak_hz/1000.0:.2f} kHz**")
-    lines.append(
-        f"- energy fraction above {NYQUIST_GUARD_HZ/1000:.0f} kHz: "
-        f"**{r.energy_above_guard_frac*100:.2f}%**"
-    )
-    verdict = "YES" if r.has_ultrasonic_energy else "NO"
-    lines.append(f"- ultrasonic energy present (>{NYQUIST_GUARD_HZ/1000:.0f} kHz): **{verdict}**")
+    if r.fft_nfft == 0:
+        lines.append(f"- ultrasonic energy (>{NYQUIST_GUARD_HZ/1000:.0f} kHz): **NOT MEASURED** "
+                     "— no samples were captured (capture did not open).")
+    else:
+        lines.append(f"- nfft: {r.fft_nfft}")
+        lines.append(f"- peak frequency: **{r.peak_hz/1000.0:.2f} kHz**")
+        lines.append(
+            f"- energy fraction above {NYQUIST_GUARD_HZ/1000:.0f} kHz: "
+            f"**{r.energy_above_guard_frac*100:.2f}%**"
+        )
+        verdict = "YES" if r.has_ultrasonic_energy else "NO"
+        lines.append(f"- ultrasonic energy present (>{NYQUIST_GUARD_HZ/1000:.0f} kHz): **{verdict}**")
     lines.append("")
 
     if r.notes:
