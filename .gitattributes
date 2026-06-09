@@ -1,0 +1,5 @@
+# Normalize line endings: LF in the repo (Kali edits on Linux, capture runs on Windows).
+* text=auto eol=lf
+
+# Treat WAV captures as binary (never normalized / diffed).
+*.wav binary

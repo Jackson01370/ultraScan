@@ -1,0 +1,22 @@
+# ── Python ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ── Virtual env ────────────────────────────────────────
+.venv/
+venv/
+
+# ── Capture / runtime artifacts ────────────────────────
+captures/
+*.wav
+# keep small test fixtures if we ever add them:
+!tests/data/**/*.wav
+
+# ── OS / editor ────────────────────────────────────────
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/

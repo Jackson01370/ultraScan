@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ultrascan"
+version = "0.0.0"           # provisional name (see DESIGN §0 / §12-1)
+description = "Realtime ultrasonic spectrum analyzer / bat detector (sister of sigscan)"
+requires-python = ">=3.9,<3.10"   # pinned to sigscan's 3.9.x for v2 CNN reuse
+readme = "README.md"
+
+# Flat package layout: import as `ultrascan.*` directly from repo root.
+[tool.setuptools.packages.find]
+include = ["ultrascan*"]
+
+[tool.pytest.ini_options]
+minversion = "7.4"
+testpaths = ["tests"]
+addopts = "-ra"

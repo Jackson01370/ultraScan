@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# ── dev / test (Sim-first, no hardware required) ───────
+pytest>=7.4

@@ -1,0 +1,23 @@
+# ultrascan — runtime dependencies (Python 3.9.x, sigscan-compatible)
+#
+# Pins follow sigscan so the v2 CNN/training harness can be reused unchanged.
+# Versions kept compatible with torch 2.8.0+cpu / numpy 1.26.4 (NOT installed in v1).
+#
+# Install notes:
+#   - M0 (capture stress test) only needs:  numpy, scipy, sounddevice, soxr
+#   - M1+ adds the GUI stack (pyqtgraph + Qt)
+#   - M5 adds the recording stack (guano)
+# To keep M0 lean, GUI/record lines are listed but commented; uncomment per milestone.
+
+# ── core DSP / capture (M0+) ───────────────────────────
+numpy==1.26.4          # pinned: sigscan / torch 2.8 compatibility
+scipy>=1.11,<1.14      # rfft, lfilter (zi state), FIR design — last line supporting py3.9
+sounddevice>=0.4.6     # PortAudio bindings; WASAPI exclusive mode
+soxr>=0.3.7            # high-quality fractional resample (e.g. 50k -> 48k)
+
+# ── GUI stack (M1+) ────────────────────────────────────
+# pyqtgraph>=0.13       # realtime spectrum + waterfall (matplotlib is not realtime-capable)
+# PyQt5>=5.15           # Qt binding for pyqtgraph (PySide6 also acceptable)
+
+# ── recording stack (M5) ───────────────────────────────
+# guano>=1.0            # GUANO metadata read/write for event WAVs
