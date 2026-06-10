@@ -49,6 +49,7 @@ def synth_signal(
     kind: str = "tone",
     tone_hz: float = 45_000.0,
     chirp_hz: tuple = (20_000.0, 90_000.0),
+    chirp_period_s: float = 1.0,
     amplitude: float = 0.5,
 ) -> np.ndarray:
     """Deterministic real-valued test signal (float32), indexed by absolute sample.
@@ -62,10 +63,17 @@ def synth_signal(
     if kind == "tone":
         sig = amplitude * np.sin(2.0 * np.pi * tone_hz * t)
     elif kind == "chirp":
+        # Sawtooth sweep f0->f1 with a FIXED period in seconds, evaluated on
+        # absolute time only — so block-by-block streaming is identical to
+        # single-call generation at any blocksize. (The old form derived the
+        # sweep rate from one block span but used absolute time: streamed, the
+        # instantaneous frequency ramped past Nyquist ~ms in and aliased into
+        # full-band garbage.) Phase restarts at each sweep wrap (display-grade).
         f0, f1 = chirp_hz
-        period = max(n, 1) / samplerate  # one sweep across this block span
+        period = float(chirp_period_s)
         k = (f1 - f0) / period
-        phase = 2.0 * np.pi * (f0 * t + 0.5 * k * (t ** 2))
+        tm = np.mod(t, period)
+        phase = 2.0 * np.pi * (f0 * tm + 0.5 * k * tm ** 2)
         sig = amplitude * np.sin(phase)
     else:
         raise ValueError(f"unknown synthetic kind: {kind!r}")

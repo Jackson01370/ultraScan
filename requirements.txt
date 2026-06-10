@@ -16,8 +16,8 @@ sounddevice>=0.4.6     # PortAudio bindings; WASAPI exclusive mode
 soxr>=0.3.7            # high-quality fractional resample (e.g. 50k -> 48k)
 
 # ── GUI stack (M1+) ────────────────────────────────────
-# pyqtgraph>=0.13       # realtime spectrum + waterfall (matplotlib is not realtime-capable)
-# PyQt5>=5.15           # Qt binding for pyqtgraph (PySide6 also acceptable)
+pyqtgraph>=0.13        # realtime spectrum + waterfall (matplotlib is not realtime-capable)
+PyQt5>=5.15            # Qt binding for pyqtgraph (PySide6 also acceptable)
 
 # ── recording stack (M5) ───────────────────────────────
 # guano>=1.0            # GUANO metadata read/write for event WAVs
