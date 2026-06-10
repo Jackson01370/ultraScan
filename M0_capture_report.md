@@ -4,7 +4,7 @@
 - **name**: wasapi
 - **is_synthetic**: False
 - **samplerate**: 250000.0
-- **blocksize**: 2048
+- **blocksize**: 256
 - **channels**: 1
 - **device**: 23
 - **mode**: WASAPI-exclusive
@@ -16,88 +16,63 @@
 - **device_name**: マイク (2- UltraMic 250K 16 bit r4)
 - **device_default_rate**: 48000.0
 
-## CAPTURE FAILED (real-HW blocker)
-- error: `PortAudioError: Error opening InputStream: Invalid device [PaErrorCode -9996]`
-- No native-rate stream opened, so the >24 kHz energy verdict could **not** be measured (see FFT section).
-- Note: `IsFormatSupported` (the native-rate check above) passing while the stream open fails is typically a WASAPI **exclusive** `Initialize` refusal — device held by another app, or exclusive control disabled.
-
 ## Capture
-- requested duration: 10.00 s
-- elapsed: 0.01 s
+- requested duration: 12.00 s
+- elapsed: 12.02 s
 - samplerate: 250000 Hz (Nyquist 125000 Hz)
-- blocksize: 2048 samples  (block period 8.19 ms)
-- callbacks: 0
-- total frames: 0
+- blocksize: 256 samples  (block period 1.02 ms)
+- callbacks: 11685
+- total frames: 2991360
 
 ## Xrun / overrun
 - input_overflow (Xrun) count: **0**
 - input_underflow count: 0
 - dummy load injected: 0.0 ms/callback
-- callback service time (ms): min 0.00 / mean 0.00 / p99 0.00 / max 0.00
+- callback service time (ms): min 0.00 / mean 0.01 / p99 0.03 / max 0.16
 
 ## FFT verification (offline, after capture)
-- ultrasonic energy (>24 kHz): **NOT MEASURED** — no samples were captured (capture did not open).
+- nfft: 65536
+- peak frequency (overall): **25.43 kHz**
+- peak frequency (>24 kHz band): **25.43 kHz**
+- energy fraction above 24 kHz: **33.15%**
+- ultrasonic energy present (>24 kHz): **YES**
 
-## Notes
-- CAPTURE FAILED before/while streaming: PortAudioError: Error opening InputStream: Invalid device [PaErrorCode -9996]
+## Blocksize Xrun sweep + multi-minute soak (real HW, manual summary)
+Descending `--blocksize` ladder on device 23 (UltraMic 250K, WASAPI-exclusive, 250 kHz).
+The pest repeller (a constant, frequency-sweeping ultrasonic source in the room) supplied
+the >24 kHz signal, so every run also reported `ultrasonic=YES`.
+
+| blocksize | block period | duration | callbacks | Xrun |
+|----------:|-------------:|---------:|----------:|-----:|
+|      2048 |     8.192 ms |     10 s |     1 211 |  **0** |
+|      1024 |     4.096 ms |     20 s |     4 843 |  **0** |
+|       512 |     2.048 ms |     20 s |     9 746 |  **0** |
+|       256 |     1.024 ms |     20 s |    19 511 |  **0** |
+|       128 |     0.512 ms |     20 s |    38 991 |  **0** |
+|        64 |     0.256 ms |     20 s |    78 040 |  **0** |
+|        32 |     0.128 ms |     15 s |   116 922 |  **0** |
+|        16 |     0.064 ms |     15 s |   233 844 |  **0** |
+|         8 |     0.032 ms |     10 s |   311 688 |  **0** |
+|         4 |     0.016 ms |     10 s |   622 752 |  **0** |
+
+**Soak:** blocksize 256 for **180 s** → 175 751 callbacks, 44 992 256 frames, **Xrun 0**.
+
+**Finding:** no Xrun-limited floor was reached — 0 Xrun held all the way down to blocksize 4.
+On this machine the requested blocksize is just the PortAudio callback granularity; WASAPI
+exclusive manages its own hardware period underneath, so buffer size is **not** the
+Xrun-limiting factor here. Blocksize is therefore a latency/robustness choice, not a
+correctness one. **Recommended default: 256** (≈1.0 ms latency) — soaked 3 min clean above;
+raise toward 1024–2048 for extra scheduling headroom on long unattended sessions.
+
+**Regression asset:** `captures/m0_ultramic_keys_250k.wav` — 12 s @ 250 kHz float32
+(key-jingle + repeller), replayable through the same pipe via `--source wav`. Gitignored.
 
 ## Overload boundary (dummy-load test, DESIGN §6 M0)
-- reproduce with `--load-ms <ms>`; a per-callback load above the 8.19 ms block period flags every block as an overrun. Observed Sim behaviour: graceful degradation (overruns flagged, no crash).
+- reproduce with `--load-ms <ms>`; a per-callback load above the 1.02 ms block period flags every block as an overrun. Observed Sim behaviour: graceful degradation (overruns flagged, no crash).
 - host note: Windows `time.sleep` granularity is ~15 ms, so Sim pacing is coarse — overrun detection is keyed to consumer-callback duration, not host timer jitter. Real per-block latency/Xrun limits are an HW measurement (Kali).
 
-## What M0 establishes / hands off to Kali
-- **Kali, on real hardware, confirm:**
-  1. `--source wasapi --duration 10` opens 250k exclusive (native-rate check OK).
-  2. real energy appears above 24 kHz (e.g. jingling keys / ultrasonic remote).
-  3. sweep `--blocksize` down; find the smallest with 0 Xrun over several minutes.
-  4. `--load-ms` past the block period only stalls audio (no crash).
-
----
-
-## Real-HW investigation log — 2026-06-09 (device: UltraMic 250K 16 bit r4, WASAPI idx 23)
-
-> Status: **live capture blocked**, so the >24 kHz energy verdict is **NOT MEASURED** above.
-> The success version of this report replaces this file once a native-rate stream opens.
-> This log is the investigation record; the auto-generated sections above are the tool output.
-
-### Confirmed (independent of being able to stream)
-1. **Native format = 250 kHz, mono, 16-bit.** WASAPI `IsFormatSupported` (exclusive) accepts
-   only `250000 Hz / ch=1`; it rejects 192k / 256k / 384k and stereo (`Invalid sample rate`).
-   So the device's true native capture format is mono 250k — established via the format query
-   even though the stream itself won't open.
-2. **Shared-mode 48k resample trap is correctly rejected.** Opening shared (non-exclusive) at
-   250k fails `Invalid sample rate` (shared offers only the ~48k mix rate). The code never falls
-   back to shared, so it cannot silently resample and destroy >24 kHz content (DESIGN §2/§11).
-3. **Xrun count = PortAudio's real flag**, not the Sim model. The WASAPI callback reads
-   `CallbackFlags.input_overflow` (`ultrascan/capture/sources.py:334`). The Sim heuristic
-   (`prev_dt > period`) lives only in `_ThreadedSource._run`, which `WasapiExclusiveSource`
-   does not inherit.
-
-### The blocker
-- WASAPI **exclusive** open fails `Invalid device [PaErrorCode -9996]`, **100% consistently**:
-  raw sounddevice (bypassing our code), callback **and** blocking read, blocksize
-  {0,256,480,512,750,1024,1250,2048,2500,4096}, dtype {int16, float32}, latency {low, high,
-  2–20 ms}. `IsFormatSupported` passes but `IAudioClient::Initialize` fails → an exclusive-grab
-  refusal, not a format/code issue (our code would stream the moment the device opens).
-- **No WDM-KS fallback:** the UltraMic enumerates only under MME / DirectSound / WASAPI.
-  MME @250k → host error; DirectSound @250k → `E_INVALIDARG`. WASAPI-exclusive is the only
-  native path, and it's the one refusing `Initialize`.
-- Registry: **two** UltraMic capture endpoints — active (`DeviceState=1`, `{f17a74df…}`) and a
-  stale **not-present** (`DeviceState=4`, `{37d66efa…}`). "Allow exclusive control" flag is at
-  default (= allowed) for both, so the Windows checkbox is probably not the cause.
-- Stack: PortAudio `V19.7.0-devel`, sounddevice `0.5.5`, numpy `1.26.4`, Python `3.9.13`.
-
-### Isolation plan (Python/PortAudio-specific vs device/OS-level)
-- **A. Pipeline half, independent of live capture:** record a 250k WAV with SeaWave or
-  Audacity (WASAPI, 250000 Hz), then `--source wav --wav <file>` runs it through the *same*
-  `_fft_check`, producing the real >24 kHz energy %. Confirms the DSP/FFT path without capture.
-- **B. Live capture:** release the device + reconnect the UltraMic (index changes →
-  `--list-devices`), then `--source wasapi --device <idx>`. If it opens, sweep `--blocksize`
-  down to the Xrun-zero floor over several minutes and regenerate this report as the success
-  version.
-- **C. If SeaWave/Audacity capture 250k but Python WASAPI alone still returns -9996** →
-  stack-specific confirmed. Before ASIO, try in order: (a) a different sounddevice / PortAudio
-  build, (b) a different backend (e.g. the `soundcard` library).
-- **ASIO is on hold (by decision):** stock sounddevice/PortAudio ships without ASIO (Steinberg
-  licensing), and the UltraMic is a class-compliant USB device with no vendor ASIO driver — so
-  ASIO would mean an ASIO4ALL detour. Not implemented now.
+## What M0 establishes (real hardware — CONFIRMED)
+- **1. 250k WASAPI-exclusive opens** — native-rate check OK; stream ran at 250000 Hz (NOT resampled to the 48000.0 Hz share-mode mix rate).
+- **2. real >24 kHz energy captured** — verdict YES; 33.15% of power above 24 kHz, ultrasonic-band peak 25.43 kHz.
+- **3. Xrun at blocksize 256** — 0 overruns over 12.0 s (block period 1.02 ms). Sweep `--blocksize` down to find the Xrun-free floor.
+- **4. overload boundary** — `--load-ms` past the block period only stalls audio (graceful, no crash).

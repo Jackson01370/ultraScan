@@ -44,16 +44,24 @@ class StressResult:
     peak_hz: float
     energy_above_guard_frac: float
     has_ultrasonic_energy: bool
+    peak_above_guard_hz: float = 0.0
     native_rate_check: Optional[dict] = None
     capture_error: Optional[str] = None
     notes: List[str] = field(default_factory=list)
+    samples: Optional[np.ndarray] = None  # full capture, only when keep_samples=True
 
 
 def _fft_check(samples: np.ndarray, samplerate: float, nfft: int) -> dict:
-    """Offline one-sided rfft: peak frequency + fraction of energy above the guard."""
+    """Offline one-sided rfft: peak frequency + fraction of energy above the guard.
+
+    Reports two peaks: the overall spectral peak (often a low-frequency floor —
+    DC residue / handling / room rumble) and the peak *restricted to the >24 kHz
+    band*, which is the actual ultrasonic line (keys / repeller) the guard cares
+    about. Both matter on real hardware where the LF floor can dominate total power.
+    """
     n = min(nfft, samples.size)
     if n < 16:
-        return {"nfft": 0, "peak_hz": 0.0, "frac": 0.0, "ok": False}
+        return {"nfft": 0, "peak_hz": 0.0, "peak_above_hz": 0.0, "frac": 0.0, "ok": False}
     n = 1 << int(np.floor(np.log2(n)))  # power-of-two window
     seg = samples[-n:].astype(np.float64)
     win = np.hanning(n)
@@ -63,10 +71,17 @@ def _fft_check(samples: np.ndarray, samplerate: float, nfft: int) -> dict:
     power[0] = 0.0  # ignore DC
     total = power.sum()
     if total <= 0:
-        return {"nfft": n, "peak_hz": 0.0, "frac": 0.0, "ok": False}
+        return {"nfft": n, "peak_hz": 0.0, "peak_above_hz": 0.0, "frac": 0.0, "ok": False}
     peak_hz = float(freqs[int(np.argmax(power))])
-    frac = float(power[freqs > NYQUIST_GUARD_HZ].sum() / total)
-    return {"nfft": n, "peak_hz": peak_hz, "frac": frac, "ok": True}
+    above = freqs > NYQUIST_GUARD_HZ
+    frac = float(power[above].sum() / total)
+    if np.any(above):
+        above_idx = np.nonzero(above)[0]
+        peak_above_hz = float(freqs[above_idx[int(np.argmax(power[above_idx]))]])
+    else:
+        peak_above_hz = 0.0
+    return {"nfft": n, "peak_hz": peak_hz, "peak_above_hz": peak_above_hz,
+            "frac": frac, "ok": True}
 
 
 def run_capture(
@@ -77,9 +92,17 @@ def run_capture(
     ring_seconds: float = 2.0,
     fft_nfft: int = 65_536,
     ultrasonic_frac_threshold: float = 0.01,
+    keep_samples: bool = False,
 ) -> StressResult:
     """Capture for ``duration`` seconds and summarise. ``load_ms`` injects a dummy
-    per-callback sleep to probe overload behaviour (M0 dummy-load test)."""
+    per-callback sleep to probe overload behaviour (M0 dummy-load test).
+
+    ``keep_samples`` sizes the ring to hold the whole capture and returns it on
+    ``result.samples`` (for saving a regression WAV). Off by default so normal/Sim
+    runs keep the small 2 s ring; the FFT window is unaffected either way.
+    """
+    if keep_samples:
+        ring_seconds = max(ring_seconds, duration + 0.5)
     ring = RingBuffer(max(int(ring_seconds * source.samplerate), fft_nfft))
     period_ms = 1000.0 * source.blocksize / source.samplerate
 
@@ -124,7 +147,8 @@ def run_capture(
     if counters["frames"] > 0:
         fft = _fft_check(ring.latest(fft_nfft), source.samplerate, fft_nfft)
     else:
-        fft = {"nfft": 0, "peak_hz": 0.0, "frac": 0.0, "ok": False}
+        fft = {"nfft": 0, "peak_hz": 0.0, "peak_above_hz": 0.0, "frac": 0.0, "ok": False}
+    captured = ring.latest(ring.capacity) if (keep_samples and counters["frames"] > 0) else None
     svc = np.asarray(service_ms) if service_ms else np.zeros(1)
 
     notes: List[str] = []
@@ -161,9 +185,11 @@ def run_capture(
         peak_hz=float(fft["peak_hz"]),
         energy_above_guard_frac=float(fft["frac"]),
         has_ultrasonic_energy=bool(fft["ok"] and fft["frac"] >= ultrasonic_frac_threshold),
+        peak_above_guard_hz=float(fft["peak_above_hz"]),
         native_rate_check=native_check,
         capture_error=capture_error,
         notes=notes,
+        samples=captured,
     )
 
 
@@ -227,7 +253,11 @@ def render_report(result: StressResult) -> str:
                      "— no samples were captured (capture did not open).")
     else:
         lines.append(f"- nfft: {r.fft_nfft}")
-        lines.append(f"- peak frequency: **{r.peak_hz/1000.0:.2f} kHz**")
+        lines.append(f"- peak frequency (overall): **{r.peak_hz/1000.0:.2f} kHz**")
+        lines.append(
+            f"- peak frequency (>{NYQUIST_GUARD_HZ/1000:.0f} kHz band): "
+            f"**{r.peak_above_guard_hz/1000.0:.2f} kHz**"
+        )
         lines.append(
             f"- energy fraction above {NYQUIST_GUARD_HZ/1000:.0f} kHz: "
             f"**{r.energy_above_guard_frac*100:.2f}%**"
@@ -262,19 +292,46 @@ def render_report(result: StressResult) -> str:
     )
     lines.append("")
 
-    lines.append("## What M0 establishes / hands off to Kali")
-    if synthetic:
-        lines.append("- **establishes (Sim):** the capture pipe runs end-to-end — "
-                     "InputSource -> copy-only callback -> ring -> offline FFT — and that a "
-                     "known >24 kHz tone is recovered, overruns are detected, and overload "
-                     "degrades gracefully.")
-        lines.append("- **does NOT establish:** that this PC + UltraMic can actually open "
-                     "WASAPI **exclusive** at 250k, nor the real Xrun-free blocksize floor.")
-    lines.append("- **Kali, on real hardware, confirm:**")
-    lines.append("  1. `--source wasapi --duration 10` opens 250k exclusive (native-rate check OK).")
-    lines.append("  2. real energy appears above 24 kHz (e.g. jingling keys / ultrasonic remote).")
-    lines.append("  3. sweep `--blocksize` down; find the smallest with 0 Xrun over several minutes.")
-    lines.append("  4. `--load-ms` past the block period only stalls audio (no crash).")
+    real_ok = (
+        not synthetic
+        and not r.capture_error
+        and bool(r.native_rate_check and r.native_rate_check.get("ok"))
+    )
+
+    if real_ok:
+        lines.append("## What M0 establishes (real hardware — CONFIRMED)")
+        lines.append(
+            f"- **1. 250k WASAPI-exclusive opens** — native-rate check OK; stream ran at "
+            f"{r.samplerate:.0f} Hz (NOT resampled to the {r.native_rate_check.get('device_default_rate')} Hz "
+            "share-mode mix rate)."
+        )
+        verdict = "YES" if r.has_ultrasonic_energy else "NO"
+        lines.append(
+            f"- **2. real >24 kHz energy captured** — verdict {verdict}; "
+            f"{r.energy_above_guard_frac*100:.2f}% of power above 24 kHz, "
+            f"ultrasonic-band peak {r.peak_above_guard_hz/1000.0:.2f} kHz."
+        )
+        lines.append(
+            f"- **3. Xrun at blocksize {r.blocksize}** — {r.overflow_count} overruns over "
+            f"{r.elapsed_s:.1f} s (block period {r.block_period_ms:.2f} ms). "
+            "Sweep `--blocksize` down to find the Xrun-free floor."
+        )
+        lines.append("- **4. overload boundary** — `--load-ms` past the block period only "
+                     "stalls audio (graceful, no crash).")
+    else:
+        lines.append("## What M0 establishes / hands off to Kali")
+        if synthetic:
+            lines.append("- **establishes (Sim):** the capture pipe runs end-to-end — "
+                         "InputSource -> copy-only callback -> ring -> offline FFT — and that a "
+                         "known >24 kHz tone is recovered, overruns are detected, and overload "
+                         "degrades gracefully.")
+            lines.append("- **does NOT establish:** that this PC + UltraMic can actually open "
+                         "WASAPI **exclusive** at 250k, nor the real Xrun-free blocksize floor.")
+        lines.append("- **Kali, on real hardware, confirm:**")
+        lines.append("  1. `--source wasapi --duration 10` opens 250k exclusive (native-rate check OK).")
+        lines.append("  2. real energy appears above 24 kHz (e.g. jingling keys / ultrasonic remote).")
+        lines.append("  3. sweep `--blocksize` down; find the smallest with 0 Xrun over several minutes.")
+        lines.append("  4. `--load-ms` past the block period only stalls audio (no crash).")
     lines.append("")
 
     return "\n".join(lines)

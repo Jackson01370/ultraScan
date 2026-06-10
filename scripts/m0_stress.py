@@ -89,6 +89,8 @@ def main(argv=None) -> int:
     p.add_argument("--wav", default=None, help="WAV path for --source wav")
     p.add_argument("--device", default=None, help="WASAPI device index or name substring")
     p.add_argument("--report", default="M0_capture_report.md", help="report output path")
+    p.add_argument("--save-wav", default=None,
+                   help="save the full capture to this WAV path (regression asset)")
     p.add_argument("--list-devices", action="store_true",
                    help="list audio input devices / host APIs and exit (helps pick WASAPI device)")
     args = p.parse_args(argv)
@@ -102,13 +104,30 @@ def main(argv=None) -> int:
     print(f"[m0] source={source.name} rate={source.samplerate:.0f} "
           f"blocksize={source.blocksize} duration={args.duration}s load={args.load_ms}ms")
 
-    result = run_capture(source, args.duration, load_ms=args.load_ms)
+    result = run_capture(source, args.duration, load_ms=args.load_ms,
+                         keep_samples=bool(args.save_wav))
 
     print(f"[m0] callbacks={result.n_callbacks} frames={result.total_frames} "
           f"xrun={result.overflow_count} "
           f"peak={result.peak_hz/1000:.2f}kHz "
+          f"peak>24k={result.peak_above_guard_hz/1000:.2f}kHz "
           f">24kHz={result.energy_above_guard_frac*100:.1f}% "
           f"ultrasonic={'YES' if result.has_ultrasonic_energy else 'NO'}")
+
+    if args.save_wav:
+        if result.samples is not None and result.samples.size:
+            import numpy as np
+            from scipy.io import wavfile
+
+            out = Path(args.save_wav)
+            if out.parent and not out.parent.exists():
+                out.parent.mkdir(parents=True, exist_ok=True)
+            wavfile.write(str(out), int(result.samplerate),
+                          result.samples.astype(np.float32))
+            print(f"[m0] wav written -> {out} "
+                  f"({result.samples.size} samples @ {result.samplerate:.0f} Hz, float32)")
+        else:
+            print("[m0] --save-wav requested but no samples were captured (nothing written)")
 
     report = render_report(result)
     Path(args.report).write_text(report, encoding="utf-8")
