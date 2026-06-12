@@ -5,7 +5,7 @@
 Realtime ultrasonic spectrum analyzer / bat detector for the **Dodotronic UltraMic 250K** on Windows.
 Goal (v1): *see, hear, amplify, and record* ultrasound — continuous live monitoring first.
 
-This repo is built **one milestone at a time** (M0 → M5). Currently: **M0 — capture stress test**.
+This repo is built **one milestone at a time** (M0 → M5). Currently: **M2 done (M2a+M2b) — next M3**.
 
 ---
 
@@ -13,9 +13,10 @@ This repo is built **one milestone at a time** (M0 → M5). Currently: **M0 — 
 
 | Milestone | Scope | State |
 |---|---|---|
-| **M0** | Capture stress test: WASAPI-exclusive 250k, Xrun monitor, dummy-load, Sim path | ✅ implemented (Sim verified; real-HW judged by Kali) |
-| M1 | Display only (live spectrum + waterfall); freeze `spec_audio.render` | ⬜ not started |
-| M2 | Continuous heterodyne audification (image-free DDC chain) | ⬜ |
+| **M0** | Capture stress test: WASAPI-exclusive 250k, Xrun monitor, dummy-load, Sim path | ✅ real-HW PASS (`M0_capture_report.md`) |
+| **M1** | Display only (live spectrum + waterfall); freeze `spec_audio.render` | ✅ real-HW PASS (`M1_display_report.md`) |
+| **M2a** | Image-free heterodyne DDC (`HeterodyneAudifier`), numeric offline verify; freeze `audifier.py` | ✅ (`M2a_ddc_report.md`) |
+| **M2b** | Live audio out: L3 worker + SPSC queue + output callback + GUI band drag | ✅ real-HW PASS (`M2b_audio_report.md`) |
 | M3 | Gain / AGC | ⬜ |
 | M4 | Event detection + measurement | ⬜ |
 | M5 | Event-triggered GUANO recording | ⬜ |
@@ -54,6 +55,19 @@ Run the stress test (Sim example — 45 kHz tone, 5 s, with a dummy callback loa
 
 It writes a report to `M0_capture_report.md` (achieved latency, tolerable buffer, Xrun results,
 and whether energy appears above 24 kHz — Nyquist 125 kHz).
+
+## M1 — live display / M2b — live audification
+
+```powershell
+# M1: spectrum + waterfall only
+.\.venv\Scripts\python.exe scripts\m1_view.py --source wasapi --device 21 --blocksize 256
+# M2b: + heterodyne audio — drag the band on the waterfall to listen
+.\.venv\Scripts\python.exe scripts\m2b_listen.py --source wasapi --device 21 --blocksize 256 --f-lo 20000 --bandwidth 10000
+# M2b Sim verification, no speakers / no GUI (numeric continuity + underrun report)
+.\.venv\Scripts\python.exe scripts\m2b_listen.py --source wav --wav captures\m0_ultramic_keys_250k.wav --f-lo 20000 --blocksize 8192 --no-gui --sim-out --duration 8
+```
+
+Device indexes move between reboots — check with `--list-devices` first.
 
 ## Layout
 
