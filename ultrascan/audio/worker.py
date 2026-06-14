@@ -40,6 +40,7 @@ class AudioWorker(threading.Thread):
         f_lo_sel: float,
         bandwidth: float,
         *,
+        gain=None,
         volume: float = 1.0,
         poll_s: float = 0.01,
         max_read: Optional[int] = None,
@@ -49,6 +50,12 @@ class AudioWorker(threading.Thread):
         self.audifier = audifier
         self.out_ring = out_ring
         self.fs_in = float(fs_in)
+        # Optional M3 GainStage (e.g. AGCGain), applied to the DDC output before
+        # the safety attenuator. An independent stage (DESIGN §3 component
+        # separation): the audifier is unaware of it. ``None`` = identity, so
+        # the M2b path is unchanged. Driven on this thread only -> its state
+        # (AGC current gain) never races; never touched in the callback.
+        self.gain = gain
         # Fixed output attenuator — a safety knob for live listening, applied on
         # this thread (never in the callback). NOT the M3 GainStage (no AGC /
         # normalize / compress lives here).
@@ -110,6 +117,9 @@ class AudioWorker(threading.Thread):
             if samples.size:
                 self.n_in_samples += samples.size
                 audio = self.audifier.process(samples)
+                if self.gain is not None and audio.size:
+                    # Independent stage: DDC output -> gain -> (volume) -> SPSC.
+                    audio = self.gain.process(audio)
                 if self.volume != 1.0:
                     audio *= np.float32(self.volume)
                 if audio.size:

@@ -10,6 +10,15 @@ Examples (PowerShell — one command per line, no &&):
   # Real HW headless underrun soak (minutes), output also saved for offline FFT
   python scripts\\m2b_listen.py --source wasapi --device 21 --blocksize 256 --no-gui --duration 180 --save-out captures\\m2b_realhw_out.wav
 
+M3 — AGC (audio gain only; off by default, so the plain M2b path is unchanged):
+  # Faint synthetic tone, AGC lifts it toward --agc-target (numeric Sim check)
+  python scripts\\m2b_listen.py --source synthetic --tone-hz 45000 --tone-amp 0.01 --f-lo 40000 --agc --no-gui --sim-out --duration 4
+  # Real HW: faint ultrasonic source, AGC on
+  python scripts\\m2b_listen.py --source wasapi --device 21 --f-lo 20000 --bandwidth 10000 --agc
+NB (DESIGN §6 M3): AGC raises the NOISE FLOOR with the signal — it helps a merely
+quiet signal, NOT one buried under noise (that is a future noise-reduction phase).
+Audio gain (--agc) and display contrast (--levels) are SEPARATE knobs.
+
 Click policy (a), decided for M2b: band re-selection resets DDC state -> an
 audible click at the boundary is ACCEPTED; continuous sound has priority.
 Crossfade/ramp smoothing is an M2c+ item, deliberately not implemented.
@@ -63,6 +72,7 @@ def build_source(args):
             blocksize=args.blocksize,
             tone_hz=args.tone_hz,
             kind=args.kind,
+            amplitude=args.tone_amp,
         )
     if args.source == "wav":
         if not args.wav:
@@ -99,6 +109,8 @@ def snapshot_stats(writer, worker, spsc, speaker=None, consumer=None) -> dict:
         "q_popped_real": spsc.n_popped_real,
         "q_popped_zero": spsc.n_popped_zero,
     }
+    if getattr(worker, "gain", None) is not None and hasattr(worker.gain, "current_gain"):
+        s["agc_gain"] = round(worker.gain.current_gain, 3)
     if speaker is not None:
         s["out_callbacks"] = speaker.n_callbacks
         s["out_pa_underflows"] = speaker.n_pa_underflows
@@ -169,6 +181,8 @@ def main(argv=None) -> int:
     p.add_argument("--blocksize", type=int, default=256,
                    help="capture blocksize (M0-soaked default 256; M2b re-measures under audio load)")
     p.add_argument("--tone-hz", type=float, default=45_000.0)
+    p.add_argument("--tone-amp", type=float, default=0.5,
+                   help="synthetic tone amplitude (use a small value to exercise AGC)")
     p.add_argument("--kind", choices=["tone", "chirp"], default="tone")
     p.add_argument("--wav", default=None)
     p.add_argument("--loop", action="store_true")
@@ -178,6 +192,18 @@ def main(argv=None) -> int:
     p.add_argument("--bandwidth", type=float, default=10_000.0, help="initial bandwidth [Hz]")
     p.add_argument("--volume", type=float, default=1.0,
                    help="fixed output attenuator (safety knob; NOT the M3 GainStage)")
+    # M3 AGC (audio gain only; off by default so the M2b path is unchanged)
+    p.add_argument("--agc", action="store_true",
+                   help="enable AGCGain (M3): steer output level toward --agc-target")
+    p.add_argument("--agc-target", type=float, default=0.2,
+                   help="AGC target output RMS (audio is [-1,1]; default 0.2)")
+    p.add_argument("--agc-attack-ms", type=float, default=10.0,
+                   help="AGC attack time constant [ms] (gain DROP when signal loud)")
+    p.add_argument("--agc-release-ms", type=float, default=300.0,
+                   help="AGC release time constant [ms] (gain RISE when signal quiet)")
+    p.add_argument("--agc-max-gain", type=float, default=100.0,
+                   help="AGC linear gain ceiling (default 100 = +40 dB). "
+                        "NB: raising gain raises the noise floor too (DESIGN §6 M3)")
     p.add_argument("--prebuffer-ms", type=float, default=80.0,
                    help="output read-ahead before sound starts (underrun headroom)")
     p.add_argument("--queue-s", type=float, default=2.0, help="SPSC queue capacity [s @ 48k]")
@@ -212,6 +238,7 @@ def main(argv=None) -> int:
     from ultrascan.audio.spsc import SpscAudioRing  # noqa: E402
     from ultrascan.audio.worker import AudioWorker  # noqa: E402
     from ultrascan.dsp.audifier import HeterodyneAudifier  # noqa: E402
+    from ultrascan.dsp.gain import AGCGain  # noqa: E402
     from ultrascan.gui.pipeline import RingWriter  # noqa: E402
 
     source = build_source(args)
@@ -228,10 +255,21 @@ def main(argv=None) -> int:
         capacity=int(args.queue_s * FS_OUT),
         prebuffer=int(args.prebuffer_ms / 1e3 * FS_OUT),
     )
+    gain = None
+    if args.agc:
+        # AGC runs at the audifier output rate (48 kHz), not the capture rate.
+        gain = AGCGain(
+            FS_OUT,
+            target_rms=args.agc_target,
+            attack_s=args.agc_attack_ms / 1e3,
+            release_s=args.agc_release_ms / 1e3,
+            max_gain=args.agc_max_gain,
+        )
     try:
         worker = AudioWorker(
             ring.reader(), HeterodyneAudifier(), spsc, rate,
-            f_lo_sel=args.f_lo, bandwidth=args.bandwidth, volume=args.volume,
+            f_lo_sel=args.f_lo, bandwidth=args.bandwidth,
+            gain=gain, volume=args.volume,
         )
     except ValueError as exc:
         raise SystemExit(f"[m2b] invalid initial band: {exc}")
@@ -250,10 +288,15 @@ def main(argv=None) -> int:
             record_max_s=record_s,
         )
 
+    agc_desc = (
+        f"AGC on (target_rms={args.agc_target} atk={args.agc_attack_ms}ms "
+        f"rel={args.agc_release_ms}ms max={args.agc_max_gain}x; raises noise floor too)"
+        if args.agc else "AGC off"
+    )
     print(f"[m2b] source={source.name} rate={rate:.0f} blocksize={source.blocksize}  "
           f"band={args.f_lo / 1e3:.1f}+{args.bandwidth / 1e3:.1f} kHz  out=48k "
           f"{'SIM' if args.sim_out else 'speaker'}  prebuffer={spsc.prebuffer} smp  "
-          f"volume={args.volume}")
+          f"volume={args.volume}  {agc_desc}")
 
     t0 = time.perf_counter()
     stats = {}
