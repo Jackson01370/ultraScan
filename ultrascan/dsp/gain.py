@@ -5,6 +5,13 @@
 ║  empty; signature changes need human approval (DESIGN §4, §11).            ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
+NOTE (post-M3, human-approved): the freeze is on the SIGNATURE -- the
+``GainStage.process(audio) -> audio`` contract and the constructor parameter
+list -- NOT on default VALUES. Tuning a default value with approval is allowed;
+done once here: ``max_gain`` 100 -> 12, after the real-HW finding that the
++40 dB ceiling lifted a quiet band / noise floor to a roar (CLI
+``--agc-max-gain`` still overrides per-run).
+
 The ``GainStage`` Protocol is fixed here looking ahead to all THREE planned
 implementations, so the single-method contract is enough for every one of them:
 
@@ -86,8 +93,11 @@ class AGCGain:
     attack_s, release_s : float
         Time constants (seconds) for reducing / raising gain. attack ≪ release.
     max_gain : float
-        Ceiling on the linear gain (default 100 = +40 dB). Caps how far a quiet
-        signal — and the noise floor under it — is lifted.
+        Ceiling on the linear gain (default 12 ≈ +21.6 dB). Caps how far a quiet
+        signal — and the noise floor under it — is lifted. Conservative by
+        default: the old +40 dB ceiling lifted a quiet band / noise floor to a
+        roar on real HW (post-M3 finding). Raise it (CLI --agc-max-gain) for
+        more lift when you can tolerate more floor.
     eps : float
         Level floor; a pure divide-by-zero guard, NOT a noise gate.
     """
@@ -99,7 +109,7 @@ class AGCGain:
         target_rms: float = 0.2,
         attack_s: float = 0.010,
         release_s: float = 0.300,
-        max_gain: float = 100.0,
+        max_gain: float = 12.0,
         eps: float = 1e-6,
     ):
         if fs <= 0:

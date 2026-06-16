@@ -201,9 +201,11 @@ def main(argv=None) -> int:
                    help="AGC attack time constant [ms] (gain DROP when signal loud)")
     p.add_argument("--agc-release-ms", type=float, default=300.0,
                    help="AGC release time constant [ms] (gain RISE when signal quiet)")
-    p.add_argument("--agc-max-gain", type=float, default=100.0,
-                   help="AGC linear gain ceiling (default 100 = +40 dB). "
-                        "NB: raising gain raises the noise floor too (DESIGN §6 M3)")
+    p.add_argument("--agc-max-gain", type=float, default=12.0,
+                   help="AGC linear gain ceiling (default 12 ≈ +21.6 dB; conservative "
+                        "so a quiet band / noise floor is not lifted to a roar — raise "
+                        "it for more lift). NB: raising gain raises the noise floor too "
+                        "(DESIGN §6 M3)")
     p.add_argument("--prebuffer-ms", type=float, default=80.0,
                    help="output read-ahead before sound starts (underrun headroom)")
     p.add_argument("--queue-s", type=float, default=2.0, help="SPSC queue capacity [s @ 48k]")

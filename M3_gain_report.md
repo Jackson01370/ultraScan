@@ -136,3 +136,12 @@ The real audio path (`m2b_listen.py --source synthetic --sim-out`, wall-clock
 - **`ultrascan/dsp/gain.py` — NEWLY FROZEN at M3** (`GainStage` Protocol + `AGCGain`).
 - Still stubs: `detect/detector.py` + `events.py` → M4, `record/guano_writer.py` → M5
   (diff empty this milestone).
+
+---
+
+> **Post-M3 update (pre-M4):** the `AGCGain` `max_gain` **default** was lowered
+> **100 → 12** (+40 dB → +21.6 dB) after the real-HW "roar" finding — the +40 dB
+> ceiling drove a quiet band / noise floor to the full target. Signature
+> unchanged (human-approved default tune; see the `gain.py` freeze note). Details
+> and new Sim numbers: **`M3b_agc_default_report.md`**. The faint-tone RMS 0.188
+> in the table above was measured at the original ceiling 100.

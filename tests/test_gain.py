@@ -55,20 +55,46 @@ def test_empty_block_passes_through():
 
 # ── core behaviour: lift quiet, attenuate loud ───────────────────────────────
 def test_quiet_signal_is_lifted_toward_target():
-    """A faint tone: OFF (identity) stays faint; ON climbs toward target_rms."""
+    """A weak-but-reachable tone climbs toward target_rms under the now
+    conservative default ceiling (max_gain=12). "Reachable" = its RMS exceeds
+    target_rms / max_gain, so the gain converges to the target instead of
+    saturating at the ceiling (the noise-floor-faint, ceiling-bound case is
+    pinned separately by test_faint_signal_bounded_by_conservative_default)."""
     n = int(0.5 * FS)
-    quiet = (0.01 * np.sin(2 * np.pi * 5_000.0 * np.arange(n) / FS)).astype(np.float32)
+    quiet = (0.03 * np.sin(2 * np.pi * 5_000.0 * np.arange(n) / FS)).astype(np.float32)
     in_rms = _rms(quiet)
 
-    agc = AGCGain(FS, target_rms=0.2, release_s=0.05)
+    agc = AGCGain(FS, target_rms=0.2, release_s=0.05)  # default max_gain (12)
     out = np.concatenate([agc.process(quiet[i:i + 1024]) for i in range(0, n, 1024)])
 
-    assert in_rms < 0.02                       # genuinely faint
-    assert _rms(out) > 8 * in_rms              # ON lifts it a lot
-    # converges near the target by the tail (within a factor ~1.5)
+    assert in_rms < 0.025                      # genuinely weak (well below the 0.2 target)
+    assert _rms(out) > 6 * in_rms              # ON lifts it substantially (~9x here)
+    # converges near the target by the tail
     tail = out[-int(0.1 * FS):]
     assert 0.13 < _rms(tail) < 0.30
     assert agc.current_gain > 5.0
+
+
+def test_faint_signal_bounded_by_conservative_default():
+    """Post-M3 fix (the real-HW "roar"): the DEFAULT ceiling no longer slams a
+    noise-floor-faint signal up to the target. A faint input (RMS below
+    target/ceiling) is lifted only to ~ceiling x input — well below target — under
+    the conservative default, whereas the old +40 dB ceiling reached the target."""
+    n = int(0.5 * FS)
+    faint = (0.005 * np.sin(2 * np.pi * 5_000.0 * np.arange(n) / FS)).astype(np.float32)
+    in_rms = _rms(faint)
+    assert in_rms < 0.2 / AGCGain(FS).max_gain  # genuinely faint: below the reachable level
+
+    default_agc = AGCGain(FS, target_rms=0.2, release_s=0.05)              # new default ceiling
+    hot_agc = AGCGain(FS, target_rms=0.2, release_s=0.05, max_gain=100.0)  # the old +40 dB ceiling
+    d = np.concatenate([default_agc.process(faint[i:i + 1024]) for i in range(0, n, 1024)])
+    h = np.concatenate([hot_agc.process(faint[i:i + 1024]) for i in range(0, n, 1024)])
+    d_tail = _rms(d[-int(0.1 * FS):])
+    h_tail = _rms(h[-int(0.1 * FS):])
+
+    assert d_tail < 0.08    # conservative default keeps the faint signal well below target (no roar)
+    assert h_tail > 0.15    # the old ceiling would have slammed it to ~target
+    assert default_agc.current_gain <= AGCGain(FS).max_gain + 1e-6  # capped at the default ceiling
 
 
 def test_loud_signal_is_attenuated_toward_target():
@@ -153,7 +179,7 @@ def test_attack_is_faster_than_release():
     r = AGCGain(FS, target_rms=0.2, attack_s=0.010, release_s=0.300)
     quiet = np.full(n, 0.02, dtype=np.float32)
     r.process(quiet)
-    g_want_release = min(0.2 / 0.02, 100.0)
+    g_want_release = min(0.2 / 0.02, 12.0)  # match default ceiling; 0.2/0.02=10 < 12, so unchanged
     frac_release = (r.current_gain - 1.0) / (g_want_release - 1.0)
 
     assert frac_attack > frac_release          # attack moves more in the same time
