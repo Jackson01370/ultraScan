@@ -131,6 +131,12 @@ def main(argv=None) -> int:
     p.add_argument("--warmup-ms", type=float, default=300.0, help="suppress detection while background settles")
     p.add_argument("--det-fmin-khz", type=float, default=1.0, help="ignore bins below this (DC/low rumble)")
     p.add_argument("--log-events", default=None, help="write detected-event measurements to a CSV (OFF by default)")
+    # recording (M5): event-triggered, pre-rolled GUANO WAV. OFF by default.
+    p.add_argument("--record", action="store_true", help="write a GUANO WAV per detected event (M5; OFF by default)")
+    p.add_argument("--record-dir", default="captures", help="directory for event WAVs")
+    p.add_argument("--preroll-ms", type=float, default=300.0, help="lead-in recorded BEFORE the onset (no clipped onset)")
+    p.add_argument("--postroll-ms", type=float, default=200.0, help="tail recorded after the event end")
+    p.add_argument("--max-record-s", type=float, default=10.0, help="cap on a single event recording length")
     # audio (listen while detecting; reuses the M2b/M3 path). Off in headless by default.
     p.add_argument("--no-audio", action="store_true", help="do not start the audio path")
     p.add_argument("--f-lo", type=float, default=20_000.0, help="initial audio band lower edge [Hz]")
@@ -158,6 +164,7 @@ def main(argv=None) -> int:
     from ultrascan.detect.worker import DetectorWorker  # noqa: E402
     from ultrascan.dsp.stft import StftStream  # noqa: E402
     from ultrascan.gui.pipeline import RingWriter  # noqa: E402
+    from ultrascan.record.recorder import EventRecorder  # noqa: E402
 
     headless = args.no_gui
     want_audio = not args.no_audio and (not headless or args.sim_out)
@@ -178,18 +185,32 @@ def main(argv=None) -> int:
     collected = []
     logger = EventCsvLogger(args.log_events) if args.log_events else None
 
+    det_reader = ring.reader()                 # the detector's OWN L1 cursor
+    recorder = None
+    if args.record:
+        # l1_start_abs = the reader's position now (before the source starts),
+        # so an event's detector-time maps to absolute L1 samples for pre-roll.
+        recorder = EventRecorder(
+            ring, rate, det_reader.position,
+            preroll_s=args.preroll_ms / 1e3, postroll_s=args.postroll_ms / 1e3,
+            max_record_s=args.max_record_s, out_dir=args.record_dir,
+        )
+
     def event_sink(ev):
         collected.append(ev)
         if logger is not None:
             logger(ev)
+        if recorder is not None:
+            recorder(ev)                       # pre-roll grab + GUANO WAV (worker thread)
 
-    det_worker = DetectorWorker(ring.reader(), det_stft, detector, event_sink=event_sink)
+    det_worker = DetectorWorker(det_reader, det_stft, detector, event_sink=event_sink)
 
     print(f"[m4] source={source.name} rate={rate:.0f} nfft={det_stft.nfft} hop={det_stft.hop} "
           f"cols/s={det_stft.columns_per_second:.1f}  detector(snr={args.snr_db}dB "
           f"min_run={args.min_run_bins} min_event={args.min_event_ms:.0f}ms "
           f"bg_tau={args.bg_tau_ms:.0f}ms/{args.bg_tau_active_s:.1f}s fmin={args.det_fmin_khz}kHz)  "
-          f"audio={'on' if want_audio else 'off'}  log={'on->' + args.log_events if logger else 'off'}")
+          f"audio={'on' if want_audio else 'off'}  log={'on->' + args.log_events if logger else 'off'}  "
+          f"record={'on->' + args.record_dir if recorder else 'off'}")
 
     # ── optional audio path (listen while detecting; M2b/M3 modules) ────────────
     audio_worker = spsc = consumer = speaker = None
@@ -313,6 +334,9 @@ def main(argv=None) -> int:
         print(f"[m4]     {fmt_event(e)}")
     if logger is not None:
         print(f"[m4]   event log -> {args.log_events} ({logger.n_written} rows)")
+    if recorder is not None:
+        print(f"[m4]   recordings -> {args.record_dir} ({recorder.n_written} WAV(s); "
+              f"last {recorder.last_path})")
     return 0
 
 

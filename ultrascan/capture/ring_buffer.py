@@ -93,6 +93,26 @@ class RingBuffer:
         """
         return RingReader(self, from_now=from_now)
 
+    def read_absolute(self, start: int, n: int) -> Tuple[np.ndarray, int]:
+        """Copy up to ``n`` samples from *absolute* index ``start``, CLAMPED to
+        what is still resident; returns ``(samples, actual_start)``.
+
+        A random-access read in absolute coordinates (unlike ``RingReader``'s
+        forward FIFO). Event recording uses it to reach BACK before the trigger
+        (pre-roll) and pull the onset out of L1 — the truth source doubles as the
+        pre-trigger buffer (DESIGN §6 M5). Already-overwritten samples are dropped
+        from the front (``actual_start`` > ``start``); the tail is clamped to the
+        write head. Empty array if nothing in range is resident.
+        """
+        with self._lock:
+            total = self._total
+            oldest = total - min(total, self._capacity)
+            s = max(int(start), oldest)
+            e = min(int(start) + int(n), total)
+            if e <= s:
+                return np.empty(0, dtype=self._buf.dtype), s
+            return self._copy_absolute(s, e - s), s
+
     def _copy_absolute(self, start: int, n: int) -> np.ndarray:
         """Copy ``n`` samples beginning at *absolute* position ``start``.
 

@@ -57,6 +57,9 @@ class DetectorWorker(threading.Thread):
     ):
         super().__init__(name="detector-worker", daemon=True)
         self.reader = reader
+        # Absolute L1 index where detection began: lets the recorder map an
+        # event's detector-relative time to absolute L1 samples (M5 pre-roll).
+        self.l1_start_abs = reader.position
         self.stft = stft
         self.detector = detector
         self.event_sink = event_sink
